@@ -1,0 +1,143 @@
+# System Architecture — Intelligent Fan Air Cooling System
+
+## Overview
+
+The system is organized into four layers: **Physical**, **Simulation**, **Control**, and **Analytics**.
+
+## Layer 1 — Physical / Hardware
+
+┌──────────────────────────────────────────────────────────────────┐
+│                        PHYSICAL LAYER                            │
+│                                                                  │
+│  ┌─────────────────┐    ┌──────────────────┐    ┌─────────────┐ │
+│  │  Outside Sensor │    │  Inside Sensor   │    │ Fan Array   │ │
+│  │  (DS18B20)      │    │  (DHT22)         │    │ (DC Fans    │ │
+│  │  Temperature    │    │  Temp + Humidity │    │  w/ PWM)    │ │
+│  └────────┬────────┘    └────────┬─────────┘    └──────┬──────┘ │
+│           │                      │                     │        │
+│           └──────────────────────▼─────────────────────┘        │
+│                          Arduino / MCU                          │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Layer 2 — Simulation (Python / MATLAB)
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          SIMULATION LAYER                                │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────┐               │
+│  │               BuildingThermalModel                   │               │
+│  │                                                      │               │
+│  │   Q_conduction = UA × (T_out − T_in)                │               │
+│  │   Q_infiltration = ṁ_infil × Cp × ΔT                │               │
+│  │   Q_fan = ṁ_fan × Cp × (T_fan_in − T_in)           │               │
+│  │   Q_solar = SHGC × A_window × G_solar               │               │
+│  │   Q_internal = const (occupants + appliances)        │               │
+│  │   Q_mass = UA_mass × (T_mass − T_in)                │               │
+│  │                                                      │               │
+│  │   C_air × dT_in/dt = ΣQ_all                         │               │
+│  │   C_mass × dT_mass/dt = −Q_mass                     │               │
+│  └──────────────────────────────┬───────────────────────┘               │
+│                                 │                                        │
+│  ┌──────────────────────────────▼───────────────────────┐               │
+│  │                  WeatherProfile                      │               │
+│  │  T_out(t) = T_mean + A × sin(2π(t − t_peak)/24h)    │               │
+│  │  G_solar(t) = 800 × sin(π(t−6)/14) if 6<t<20       │               │
+│  └──────────────────────────────────────────────────────┘               │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### Thermal Network Diagram
+
+```
+                        T_outside
+                            │
+               ┌────────────┼────────────┐
+               │            │            │
+          [UA_wall]    [UA_infil]   [Q_fan]
+               │            │            │
+               └────────────┼────────────┘
+                            │
+                        T_inside ──── [UA_mass] ──── T_mass
+                            │
+                    [Q_solar + Q_internal]
+
+## Layer 3 — Control System
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          CONTROL LAYER                                  │
+│                                                                         │
+│   ┌─────────────┐     ┌──────────────────┐     ┌─────────────────────┐ │
+│   │   Sensors   │────▶│  Controller      │────▶│  Fan Actuator       │ │
+│   │ T_in, T_out │     │                  │     │  speed ∈ [0, 1]     │ │
+│   │ Humidity    │     │  Mode selection: │     │  direction ∈ {-1,1} │ │
+│   └─────────────┘     │                  │     └─────────────────────┘ │
+│                        │  1. Rule-Based  │                              │
+│   ┌─────────────┐     │  2. PID         │                              │
+│   │  Weather    │────▶│  3. Predictive  │                              │
+│   │  Forecast   │     │     (MPC)       │                              │
+│   │  (API/model)│     └──────────────────┘                             │
+│   └─────────────┘                                                       │
+│                                                                         │
+│   Control Logic:                                                        │
+│   ─────────────                                                         │
+│   IF T_in > T_max AND T_out < T_in − hysteresis:                      │
+│       fan ON (proportional to excess)                                   │
+│   IF T_in < T_min OR T_out ≥ T_in:                                    │
+│       fan OFF                                                           │
+│   MPC: pre-cool overnight when forecast peak > T_max                   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+## Layer 4 — Analytics
+
+┌────────────────────────────────────────────────────────────────────────┐
+│                         ANALYTICS LAYER                                │
+│                                                                        │
+│  ┌──────────────────┐   ┌───────────────────┐   ┌──────────────────┐  │
+│  │ Energy           │   │ Comfort           │   │ CO₂ / Cost       │  │
+│  │ Comparison       │   │ Analysis          │   │ Reduction        │  │
+│  │                  │   │                   │   │                  │  │
+│  │ Fan vs AC        │   │ % time in range   │   │ Annual savings   │  │
+│  │ kWh/year         │   │ Peak temp         │   │ vs AC baseline   │  │
+│  │ Power draw       │   │ Avg temp          │   │ Carbon offset    │  │
+│  └──────────────────┘   └───────────────────┘   └──────────────────┘  │
+│                                                                        │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │           Global Effectiveness Map                               │  │
+│  │  Identifies locations where diurnal ΔT > threshold (8°C)        │  │
+│  │  → Mediterranean, SW US, Central Asia, Southern Africa, etc.    │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────┘
+```
+## Data Flow
+Weather API / Model
+        │
+        ▼
+WeatherProfile ──────────────────────────────────────┐
+        │                                             │
+        ▼                                             ▼
+BuildingThermalModel ◀──── FanActuator ◀──── Controller
+        │                                    ▲
+        │ T_inside, T_mass, energy           │
+        └────────────────────────────────────┘
+                    (feedback)
+        │
+        ▼
+Analytics Engine ──▶ Reports, Plots, Energy Summary
+```
+## Key Equations
+
+| Quantity | Equation |
+|----------|----------|
+| Conductive heat loss | Q = UA × (T_out − T_in) |
+| Fan heat transfer | Q = ṁ × Cp × (T_out − T_in) |
+| Fan mass flow | ṁ = ρ × V̇ = ρ × A × v |
+| Fan power | P = P_max × (speed)³ |
+| Thermal mass ODE | C_m × dT_m/dt = UA_m × (T_in − T_m) |
+| Air ODE | C_air × dT_in/dt = ΣQ |
+| AC energy | E_AC = Q_cooling / COP |
+| CO₂ emissions | CO₂ = E_kWh × 0.386 kg/kWh |
