@@ -1,0 +1,155 @@
+import pytest
+import numpy as np
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from src.simulation.building_model import (
+    BuildingConfig, FanConfig, WeatherProfile,
+    BuildingThermalModel, SimulationState
+)
+from src.control.rule_based_controller import (
+    RuleBasedController, PIDController
+)
+
+
+# ─── WeatherProfile Tests ──
+
+class TestWeatherProfile:
+    def test_daytime_peak(self):
+        w = WeatherProfile(T_mean=20.0, T_amplitude=8.0, peak_hour=14.0)
+        T_peak = w.get_temperature(14 * 3600)
+        T_night = w.get_temperature(2 * 3600)
+        assert T_peak > T_night, "Daytime should be warmer than nighttime"
+
+    def test_temperature_range(self):
+        w = WeatherProfile(T_mean=20.0, T_amplitude=8.0)
+        temps = [w.get_temperature(h * 3600) for h in range(24)]
+        assert max(temps) <= 30.0
+        assert min(temps) >= 10.0
+
+    def test_solar_zero_at_night(self):
+        w = WeatherProfile()
+        assert w.get_solar_irradiance(1 * 3600) == 0.0   # 1 AM
+        assert w.get_solar_irradiance(23 * 3600) == 0.0  # 11 PM
+
+    def test_solar_positive_at_noon(self):
+        w = WeatherProfile()
+        assert w.get_solar_irradiance(12 * 3600) > 0
+
+
+# ─── Building Model Tests ───
+
+class TestBuildingThermalModel:
+    def setup_method(self):
+        self.weather = WeatherProfile(T_mean=18.0, T_amplitude=8.0)
+        self.model = BuildingThermalModel(
+            BuildingConfig(), FanConfig(), self.weather, dt=60.0
+        )
+
+    def test_step_returns_new_state(self):
+        state = SimulationState(T_inside=22.0, T_mass=20.0)
+        new_state = self.model.step(state)
+        assert isinstance(new_state, SimulationState)
+        assert new_state.time == 60.0
+
+    def test_fan_off_no_forced_convection(self):
+        state = SimulationState(T_inside=22.0, T_mass=21.0,
+                                fan_speed=0.0, fan_direction=0)
+        new_state = self.model.step(state)
+        # Temperature should change only from conduction/natural infiltration
+        assert abs(new_state.T_inside - 22.0) < 1.0  # small change in 1 min
+
+    def test_energy_accumulates(self):
+        state = SimulationState(T_inside=27.0, T_mass=22.0,
+                                fan_speed=1.0, fan_direction=1)
+        new_state = self.model.step(state)
+        assert new_state.energy_used_wh > 0.0
+
+    def test_fan_cooling_effect(self):
+        """Fan injecting cool outside air should lower inside temperature."""
+        self.weather2 = WeatherProfile(T_mean=10.0, T_amplitude=2.0)
+        model_cool = BuildingThermalModel(
+            BuildingConfig(), FanConfig(), self.weather2, dt=3600.0
+        )
+        hot_state = SimulationState(T_inside=30.0, T_mass=28.0,
+                                    fan_speed=1.0, fan_direction=1)
+        new_state = model_cool.step(hot_state)
+        assert new_state.T_inside < 30.0, "Fan should cool interior"
+
+    def test_run_produces_history(self):
+        ctrl = RuleBasedController()
+        history = self.model.run(duration_hours=1.0, controller=ctrl)
+        assert len(history) > 1
+        assert history[0].time == 0.0
+        assert history[-1].time == pytest.approx(3600.0, rel=0.01)
+
+
+# ─── Controller Tests ────
+
+class TestRuleBasedController:
+    def setup_method(self):
+        self.ctrl = RuleBasedController(T_min=20.0, T_max=25.0)
+
+    def test_fan_on_when_hot_and_outside_cool(self):
+        speed, direction = self.ctrl.compute(27.0, 16.0, 0.0)
+        assert speed > 0
+        assert direction == 1
+
+    def test_fan_off_when_comfortable(self):
+        ctrl = RuleBasedController()
+        speed, direction = ctrl.compute(22.0, 16.0, 0.0)
+        assert speed == 0.0
+
+    def test_fan_off_when_outside_warmer(self):
+        speed, direction = self.ctrl.compute(27.0, 29.0, 0.0)
+        assert speed == 0.0
+
+    def test_speed_proportional_to_excess(self):
+        _, _ = self.ctrl.compute(26.0, 15.0, 0.0)
+        speed1, _ = self.ctrl.compute(26.0, 15.0, 0.0)
+        _, _ = self.ctrl.compute(29.0, 15.0, 0.0)
+        speed2, _ = self.ctrl.compute(29.0, 15.0, 0.0)
+        assert speed2 > speed1, "Higher temp should produce higher fan speed"
+
+    def test_speed_capped_at_one(self):
+        speed, _ = self.ctrl.compute(50.0, 10.0, 0.0)
+        assert speed <= 1.0
+
+
+class TestPIDController:
+    def setup_method(self):
+        self.ctrl = PIDController(T_target=22.0, Kp=0.1, Ki=0.005, Kd=0.02)
+
+    def test_no_action_at_setpoint(self):
+        speed, _ = self.ctrl.compute(22.0, 20.0, 0.0)
+        assert speed == pytest.approx(0.0, abs=0.05)
+
+    def test_action_above_setpoint(self):
+        speed, _ = self.ctrl.compute(26.0, 18.0, 0.0)
+        assert speed > 0.0
+
+    def test_no_action_outside_warmer(self):
+        speed, _ = self.ctrl.compute(26.0, 28.0, 0.0)
+        assert speed == 0.0
+
+    def test_reset_clears_integral(self):
+        for _ in range(10):
+            self.ctrl.compute(28.0, 15.0, 0.0)
+        self.ctrl.reset()
+        assert self.ctrl._integral == 0.0
+        assert self.ctrl._prev_error == 0.0
+
+
+# ─── Energy Analytics Tests ────
+
+class TestEnergyAnalytics:
+    def test_ac_baseline_consumes_energy(self):
+        from src.analytics.energy_comparison import EnergyAnalyzer
+        outdoor_temps = [25.0 + 5 * np.sin(2 * np.pi * h / 24) for h in range(72)]
+        analyzer = EnergyAnalyzer()
+        report = analyzer.analyze_ac_baseline(outdoor_temps, simulation_days=3.0)
+        assert report.total_energy_kwh > 0
+        assert report.annual_cost_usd > 0
+        assert report.co2_kg > 0
