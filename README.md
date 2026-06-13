@@ -1,11 +1,6 @@
 # Intelligent Fan Air Cooling System
 
 > An AI-driven fan cooling system that reduces or eliminates the need for air conditioning — saving energy, cutting costs, and reducing carbon emissions.
-
-[![CI](https://github.com/your-org/intelligent-fan-cooling/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/intelligent-fan-cooling/actions/workflows/ci.yml)
-[![MATLAB Simulation](https://github.com/your-org/intelligent-fan-cooling/actions/workflows/simulation.yml/badge.svg)](https://github.com/your-org/intelligent-fan-cooling/actions/workflows/simulation.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-
 ## Overview
 
 Air conditioners consume ~6% of all US electricity (~$29B/year) and emit ~117 million metric tons of CO₂ annually. This project designs an **intelligent fan-based cooling system** using:
